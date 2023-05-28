@@ -528,6 +528,7 @@ static MQTTStatus_t addCommandToQueue( const MQTTAgentContext_t * pAgentContext,
                                        uint32_t blockTimeMs )
 {
     bool queueStatus;
+    MQTTStatus_t mqttStatus = MQTTSuccess;
 
     assert( pAgentContext != NULL );
     assert( pCommand != NULL );
@@ -541,7 +542,12 @@ static MQTTStatus_t addCommandToQueue( const MQTTAgentContext_t * pAgentContext,
         blockTimeMs
         );
 
-    return ( queueStatus ) ? MQTTSuccess : MQTTSendFailed;
+    if( queueStatus == false )
+    {
+        mqttStatus = MQTTSendFailed;
+    }
+
+    return mqttStatus;
 }
 
 /*-----------------------------------------------------------*/
@@ -582,6 +588,13 @@ static MQTTStatus_t processCommand( MQTTAgentContext_t * pMqttAgentContext,
     }
 
     operationStatus = commandFunction( pMqttAgentContext, pCommandArgs, &commandOutParams );
+
+    if( operationStatus == MQTTNeedMoreBytes )
+    {
+        /* This is not an error. */
+        operationStatus = MQTTSuccess;
+        *pEndLoop = false;
+    }
 
     if( ( operationStatus == MQTTSuccess ) &&
         commandOutParams.addAcknowledgment &&
