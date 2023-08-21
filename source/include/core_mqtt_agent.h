@@ -39,9 +39,6 @@
 
 #include "core_mqtt_agent_config_defaults.h"
 
-/* Command messaging interface include. */
-#include "core_mqtt_agent_message_interface.h"
-
 /**
  * @ingroup mqtt_agent_enum_types
  * @brief A type of command for interacting with the MQTT API.
@@ -74,13 +71,16 @@ typedef struct MQTTAgentReturnInfo
 } MQTTAgentReturnInfo_t;
 
 /**
- * @ingroup mqtt_agent_struct_types
- * @brief Struct containing context for a specific command.
- *
- * @note An instance of this struct and any variables it points to MUST stay
- * in scope until the associated command is processed, and its callback called.
+ * @brief Defines the structure to use as the command callback context in this
+ * demo.
  */
-typedef struct MQTTAgentCommandContext MQTTAgentCommandContext_t;
+typedef struct MQTTAgentCommandContext
+{
+    MQTTStatus_t xReturnStatus;
+    TaskHandle_t xTaskToNotify;
+    uint32_t ulNotificationValue;
+    void * pArgs;
+} MQTTAgentCommandContext_t;
 
 /**
  * @ingroup mqtt_agent_callback_types
@@ -107,13 +107,14 @@ typedef void (* MQTTAgentCommandCallback_t )( MQTTAgentCommandContext_t * pCmdCa
  *
  * @note The structure used to pass information from the public facing API into the
  * agent task. */
-struct MQTTAgentCommand
+typedef struct MQTTAgentCommand
 {
     MQTTAgentCommandType_t commandType;                  /**< @brief Type of command. */
     void * pArgs;                                        /**< @brief Arguments of command. */
     MQTTAgentCommandCallback_t pCommandCompleteCallback; /**< @brief Callback to invoke upon completion. */
     MQTTAgentCommandContext_t * pCmdContext;             /**< @brief Context for completion callback. */
-};
+} MQTTAgentCommand_t; /*_RB_ Can this be moved to the C file? */
+
 
 /**
  * @ingroup mqtt_agent_struct_types

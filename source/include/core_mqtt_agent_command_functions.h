@@ -61,7 +61,7 @@
  * }
  * @endcode
  */
-#ifndef MQTT_AGENT_FUNCTION_TABLE
+#ifndef MQTT_AGENT_FUNCTION_TABLE /*_RB_ Don't like having two definitions. */
     /* Designated initializers are only in C99+. */
     #if defined( __STDC_VERSION__ ) && ( __STDC_VERSION__ >= 199901L )
         #define MQTT_AGENT_FUNCTION_TABLE               \
