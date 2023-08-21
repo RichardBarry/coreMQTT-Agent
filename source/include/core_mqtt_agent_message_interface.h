@@ -123,18 +123,6 @@ typedef MQTTAgentCommand_t * ( * MQTTAgentCommandGet_t )( uint32_t blockTimeMs )
 typedef bool ( * MQTTAgentCommandRelease_t )( MQTTAgentCommand_t * pCommandToRelease );
 /* @[define_messagerelease] */
 
-/**
- * @ingroup mqtt_agent_struct_types
- * @brief Function pointers and contexts used for sending and receiving commands,
- * and allocating memory for them.
- */
-/* @[define_messageinterface] */
-typedef struct MQTTAgentMessageInterface
-{
-    MQTTAgentCommandGet_t getCommand;         /**< Function to obtain a pointer to an allocated command. */
-    MQTTAgentCommandRelease_t releaseCommand; /**< Function to release an allocated command. */
-} MQTTAgentMessageInterface_t;
-/* @[define_messageinterface] */
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus

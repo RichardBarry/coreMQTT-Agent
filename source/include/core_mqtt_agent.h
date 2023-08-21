@@ -152,7 +152,6 @@ typedef void (* MQTTAgentIncomingPublishCallback_t )( struct MQTTAgentContext * 
 typedef struct MQTTAgentContext
 {
     MQTTContext_t mqttContext;                                          /**< MQTT connection information used by coreMQTT. */
-    MQTTAgentMessageInterface_t agentInterface;                         /**< Struct of function pointers for agent messaging. */
     MQTTAgentAckInfo_t pPendingAcks[ MQTT_AGENT_MAX_OUTSTANDING_ACKS ]; /**< List of pending acknowledgment packets. */
     MQTTAgentIncomingPublishCallback_t pIncomingCallback;               /**< Callback to invoke for incoming publishes. */
     void * pIncomingCallbackContext;                                    /**< Context for incoming publish callback. */
@@ -200,7 +199,6 @@ typedef struct MQTTAgentCommandInfo
  * be used. Must be called before any other function.
  *
  * @param[in] pMqttAgentContext Pointer to struct to initialize.
- * @param[in] pMsgInterface Command interface to use for allocating and sending commands.
  * @param[in] pNetworkBuffer Pointer to network buffer to use.
  * @param[in] pTransportInterface Transport interface to use with the MQTT
  * library.  See https://www.freertos.org/network-interface.html
@@ -257,19 +255,11 @@ typedef struct MQTTAgentCommandInfo
  * transport.send = networkSend;
  * transport.recv = networkRecv;
  *
- * // Set agent message interface members.
- * messageInterface.pMsgCtx = &messageContext;
- * messageInterface.send = agentSendMessage;
- * messageInterface.recv = agentReceiveMessage;
- * messageInterface.getCommand = getCommand;
- * messageInterface.releaseCommand = releaseCommand;
- *
  * // Set buffer members.
  * fixedBuffer.pBuffer = buffer;
  * fixedBuffer.size = 1024;
  *
  * status = MQTTAgent_Init( &agentContext,
- *                          &messageInterface,
  *                          &networkBuffer,
  *                          &transportInterface,
  *                          stubGetTime,
@@ -286,7 +276,6 @@ typedef struct MQTTAgentCommandInfo
  */
 /* @[declare_mqtt_agent_init] */
 MQTTStatus_t MQTTAgent_Init( MQTTAgentContext_t * pMqttAgentContext,
-                             const MQTTAgentMessageInterface_t * pMsgInterface,
                              const MQTTFixedBuffer_t * pNetworkBuffer,
                              const TransportInterface_t * pTransportInterface,
                              MQTTGetCurrentTimeFunc_t getCurrentTimeMs,

@@ -223,13 +223,11 @@ static MQTTStatus_t createAndAddCommand( MQTTAgentCommandType_t commandType,
  * @brief Helper function to mark a command as complete and invoke its callback.
  * This function calls the releaseCommand callback.
  *
- * @param[in] pAgentContext Agent context for the MQTT connection.
  * @param[in] pCommand Command to complete.
  * @param[in] returnCode Return status of command.
  * @param[in] pSubackCodes Pointer to suback array, if command is a SUBSCRIBE.
  */
-static void concludeCommand( const MQTTAgentContext_t * pAgentContext,
-                             MQTTAgentCommand_t * pCommand,
+static void concludeCommand( MQTTAgentCommand_t * pCommand,
                              MQTTStatus_t returnCode,
                              uint8_t * pSubackCodes );
 
@@ -305,6 +303,10 @@ static MQTTStatus_t prvWaitAckIfSynchronous( MQTTStatus_t statusReturn,
                                              uint32_t ulCommandNumber,
                                              TickType_t xTimeToWait_ms );
 
+static void prvInitialiseCommandStructurePool( void );
+static MQTTAgentCommand_t * prvGetCommandStructure( uint32_t blockTimeMs );
+static bool prvReturnCommandStructure( MQTTAgentCommand_t * pCommandToRelease );
+
 /*-----------------------------------------------------------*/
 
 struct SyncCommandContext
@@ -314,6 +316,108 @@ struct SyncCommandContext
 };
 
 typedef struct SyncCommandContext SyncCommandContext_t;
+
+
+
+
+
+
+
+///////////////////////////////////////////////////_RB_
+
+/**
+ * @brief The pool of command structures used to hold information on commands (such
+ * as PUBLISH or SUBSCRIBE) between the command being created by an API call and
+ * completion of the command by the execution of the command's callback.
+ */
+static MQTTAgentCommand_t commandStructurePool[ MQTT_COMMAND_CONTEXTS_POOL_SIZE ];
+
+/**
+ * @brief Command structures may be obtained by receiving a pointer from the 
+ * queue, and returned by sending the pointer back into the queue.
+ */
+static QueueHandle_t xCommandQueue = NULL;
+
+/*-----------------------------------------------------------*/
+
+static void prvInitialiseCommandStructurePool( void )
+{
+    size_t i;
+    MQTTAgentCommand_t * pCommand;
+    static uint8_t staticQueueStorageArea[ MQTT_COMMAND_CONTEXTS_POOL_SIZE * sizeof( MQTTAgentCommand_t * ) ];
+    static StaticQueue_t staticQueueStructure;
+
+    if( xCommandQueue == NULL )
+    {
+        memset( ( void * ) commandStructurePool, 0x00, sizeof( commandStructurePool ) );
+        xCommandQueue = xQueueCreateStatic( MQTT_COMMAND_CONTEXTS_POOL_SIZE, sizeof( MQTTAgentCommand_t * ), staticQueueStorageArea, &staticQueueStructure );
+
+        /* Populate the queue. */
+        for( i = 0; i < MQTT_COMMAND_CONTEXTS_POOL_SIZE; i++ )
+        {
+            /* Store the address as a variable. */
+            pCommand = &commandStructurePool[ i ];
+            /* Send the pointer to the queue. Should never fail as the
+            loop counter and queue size use the same constant. */
+            xQueueSend( xCommandQueue, &pCommand, pdMS_TO_TICKS( 0 ) ); /*_RB_ The queue is the only member of the structure. */
+        }
+    }
+}
+
+/*-----------------------------------------------------------*/
+
+static MQTTAgentCommand_t * prvGetCommandStructure( uint32_t blockTimeMs )
+{
+    MQTTAgentCommand_t * structToUse = NULL;
+    BaseType_t structRetrieved = false;
+
+    /* Check queue has been created. */
+    configASSERT( xCommandQueue != NULL );
+
+    /* Retrieve a struct from the queue. */
+    structRetrieved = xQueueReceive( xCommandQueue, &( structToUse ), blockTimeMs );
+
+    if( structRetrieved != pdPASS )
+    {
+        LogError( ( "No command structure available." ) );
+    }
+
+    return structToUse;
+}
+
+/*-----------------------------------------------------------*/
+
+static bool prvReturnCommandStructure( MQTTAgentCommand_t * pCommandToRelease )
+{
+    bool structReturned = false;
+
+    configASSERT( xCommandQueue != NULL );
+
+    /* See if the structure being returned is actually from the pool. */
+    if( ( pCommandToRelease >= commandStructurePool ) &&
+        ( pCommandToRelease < ( commandStructurePool + MQTT_COMMAND_CONTEXTS_POOL_SIZE ) ) )
+    {
+        /* A block time of zero is ok here because there are as many structures
+         * as there are spaces in the queue. *//*_RB_Note about writing useful comments. */
+        structReturned = xQueueSend( xCommandQueue, &pCommandToRelease , 0U );
+
+        /* The send should not fail as the queue was created to hold every command
+         * in the pool. */
+        configASSERT( structReturned );
+        LogDebug( ( "Returned Command Context %d to pool",
+                    ( int ) ( pCommandToRelease - commandStructurePool ) ) );
+    }
+
+    return structReturned;
+}
+
+
+
+///////////////////////////////////////////////////_RB_
+
+
+
+
 
 /*-----------------------------------------------------------*/
 
@@ -618,7 +722,7 @@ static MQTTStatus_t processCommand( MQTTAgentContext_t * pMqttAgentContext,
     if( ( pCommand != NULL ) && ( ackAdded != true ) )
     {
         /* The command is complete, call the callback. */
-        concludeCommand( pMqttAgentContext, pCommand, operationStatus, NULL );
+        concludeCommand( pCommand, operationStatus, NULL );
     }
 
     /* Run the process loop if there were no errors and the MQTT connection
@@ -665,8 +769,7 @@ static void handleAcks( const MQTTAgentContext_t * pAgentContext,
     /* A SUBACK's status codes start 2 bytes after the variable header. */
     pSubackCodes = ( packetType == MQTT_PACKET_TYPE_SUBACK ) ? ( pPacketInfo->pRemainingData + 2U ) : NULL;
 
-    concludeCommand( pAgentContext,
-                     pAckInfo->pOriginalCommand,
+    concludeCommand( pAckInfo->pOriginalCommand,
                      pDeserializedInfo->deserializationResult,
                      pSubackCodes );
 
@@ -772,7 +875,7 @@ static MQTTStatus_t createAndAddCommand( MQTTAgentCommandType_t commandType,
      * is the initial value but not a valid packet ID. */
     if( pMqttAgentContext->mqttContext.nextPacketId != MQTT_PACKET_ID_INVALID )
     {
-        pCommand = pMqttAgentContext->agentInterface.getCommand( blockTimeMs );
+        pCommand = prvGetCommandStructure( blockTimeMs );
 
         if( pCommand != NULL )
         {
@@ -792,7 +895,7 @@ static MQTTStatus_t createAndAddCommand( MQTTAgentCommandType_t commandType,
             {
                 /* Could not send the command to the queue so release the command
                  * structure again. */
-                commandReleased = pMqttAgentContext->agentInterface.releaseCommand( pCommand );
+                commandReleased = prvReturnCommandStructure( pCommand );
 
                 if( !commandReleased )
                 {
@@ -817,8 +920,7 @@ static MQTTStatus_t createAndAddCommand( MQTTAgentCommandType_t commandType,
 
 /*-----------------------------------------------------------*/
 
-static void concludeCommand( const MQTTAgentContext_t * pAgentContext,
-                             MQTTAgentCommand_t * pCommand,
+static void concludeCommand( MQTTAgentCommand_t * pCommand,
                              MQTTStatus_t returnCode,
                              uint8_t * pSubackCodes )
 {
@@ -826,8 +928,6 @@ static void concludeCommand( const MQTTAgentContext_t * pAgentContext,
     MQTTAgentReturnInfo_t returnInfo;
 
     ( void ) memset( &returnInfo, 0x00, sizeof( MQTTAgentReturnInfo_t ) );
-    configASSERT( pAgentContext != NULL );
-    configASSERT( pAgentContext->agentInterface.releaseCommand != NULL );
     configASSERT( pCommand != NULL );
 
     returnInfo.returnCode = returnCode;
@@ -838,7 +938,7 @@ static void concludeCommand( const MQTTAgentContext_t * pAgentContext,
         pCommand->pCommandCompleteCallback( pCommand->pCmdContext, &returnInfo );
     }
 
-    commandReleased = pAgentContext->agentInterface.releaseCommand( pCommand );
+    commandReleased = prvReturnCommandStructure( pCommand );
 
     if( !commandReleased )
     {
@@ -878,7 +978,7 @@ static MQTTStatus_t resendPublishes( MQTTAgentContext_t * pMqttAgentContext )
 
             if( statusResult != MQTTSuccess )
             {
-                concludeCommand( pMqttAgentContext, pFoundAck->pOriginalCommand, statusResult, NULL );
+                concludeCommand( pFoundAck->pOriginalCommand, statusResult, NULL );
                 ( void ) memset( pFoundAck, 0x00, sizeof( MQTTAgentAckInfo_t ) );
                 LogError( ( "Failed to resend publishes. Error code=%s\n", MQTT_Status_strerror( statusResult ) ) );
                 break;
@@ -922,7 +1022,7 @@ static void clearPendingAcknowledgments( MQTTAgentContext_t * pMqttAgentContext,
             if( clearEntry )
             {
                 /* Receive failed to indicate network error. */
-                concludeCommand( pMqttAgentContext, pendingAcks[ i ].pOriginalCommand, MQTTRecvFailed, NULL );
+                concludeCommand( pendingAcks[ i ].pOriginalCommand, MQTTRecvFailed, NULL );
 
                 /* Now remove it from the list. */
                 ( void ) memset( &( pendingAcks[ i ] ), 0x00, sizeof( MQTTAgentAckInfo_t ) );
@@ -945,8 +1045,8 @@ static bool validateStruct( const MQTTAgentContext_t * pMqttAgentContext,
                     ( void * ) pMqttAgentContext,
                     ( void * ) pCommandInfo ) );
     }
-    else if( ( pMqttAgentContext->agentInterface.getCommand == NULL ) ||
-             ( pMqttAgentContext->agentInterface.releaseCommand == NULL ) )
+    else if( ( prvGetCommandStructure == NULL ) ||
+             ( prvReturnCommandStructure == NULL ) )
     {
         LogError( ( "pMqttAgentContext must have initialized its messaging interface." ) );
     }
@@ -999,7 +1099,6 @@ static bool validateParams( MQTTAgentCommandType_t commandType,
 /*-----------------------------------------------------------*/
 
 MQTTStatus_t MQTTAgent_Init( MQTTAgentContext_t * pMqttAgentContext,
-                             const MQTTAgentMessageInterface_t * pMsgInterface,
                              const MQTTFixedBuffer_t * pNetworkBuffer,
                              const TransportInterface_t * pTransportInterface,
                              MQTTGetCurrentTimeFunc_t getCurrentTimeMs,
@@ -1009,21 +1108,16 @@ MQTTStatus_t MQTTAgent_Init( MQTTAgentContext_t * pMqttAgentContext,
     MQTTStatus_t returnStatus;
 
     if( ( pMqttAgentContext == NULL ) ||
-        ( pMsgInterface == NULL ) ||
         ( pTransportInterface == NULL ) ||
         ( getCurrentTimeMs == NULL ) ||
         ( incomingCallback == NULL ) )
     {
         returnStatus = MQTTBadParameter;
     }
-    else if( ( pMsgInterface->getCommand == NULL ) ||
-             ( pMsgInterface->releaseCommand == NULL ) )
-    {
-        LogError( ( "Invalid parameter: pMsgInterface must set all members." ) );
-        returnStatus = MQTTBadParameter;
-    }
     else
     {
+        prvInitialiseCommandStructurePool();
+
         ( void ) memset( pMqttAgentContext, 0x00, sizeof( MQTTAgentContext_t ) );
 
         returnStatus = MQTT_Init( &( pMqttAgentContext->mqttContext ),
@@ -1052,7 +1146,6 @@ MQTTStatus_t MQTTAgent_Init( MQTTAgentContext_t * pMqttAgentContext,
             configASSERT( pMqttAgentContext->commandQueue );
             pMqttAgentContext->pIncomingCallback = incomingCallback;
             pMqttAgentContext->pIncomingCallbackContext = pIncomingPacketContext;
-            pMqttAgentContext->agentInterface = *pMsgInterface;
         }
     }
 
@@ -1167,7 +1260,7 @@ MQTTStatus_t MQTTAgent_CancelAll( MQTTAgentContext_t * pMqttAgentContext )
 
             if( pReceivedCommand != NULL )
             {
-                concludeCommand( pMqttAgentContext, pReceivedCommand, MQTTRecvFailed, NULL );
+                concludeCommand( pReceivedCommand, MQTTRecvFailed, NULL );
             }
         } while( commandWasReceived );
 
@@ -1178,7 +1271,7 @@ MQTTStatus_t MQTTAgent_CancelAll( MQTTAgentContext_t * pMqttAgentContext )
         {
             if( pendingAcks[ i ].packetId != MQTT_PACKET_ID_INVALID )
             {
-                concludeCommand( pMqttAgentContext, pendingAcks[ i ].pOriginalCommand, MQTTRecvFailed, NULL );
+                concludeCommand( pendingAcks[ i ].pOriginalCommand, MQTTRecvFailed, NULL );
 
                 /* Now remove it from the list. */
                 ( void ) memset( &( pendingAcks[ i ] ), 0x00, sizeof( MQTTAgentAckInfo_t ) );

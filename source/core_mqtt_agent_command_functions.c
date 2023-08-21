@@ -233,7 +233,6 @@ MQTTStatus_t MQTTAgentCommand_Terminate( MQTTAgentContext_t * pMqttAgentContext,
     ( void ) pUnusedArg;
 
     assert( pMqttAgentContext != NULL );
-    assert( pMqttAgentContext->agentInterface.releaseCommand != NULL );
     assert( pReturnFlags != NULL );
 
     LogInfo( ( "Terminating command loop.\n" ) );
